@@ -12,6 +12,7 @@ from drainage_data import (
 
 ROOT = Path(__file__).resolve().parent
 WEDI = ROOT / "data" / "WEDI_FINAL_v2_TECHNICAL_LOCK.xlsx"
+DALLMER = ROOT / "data" / "DALLMER_FINAL_Master_Complete_v2_TECHNICAL_LOCK.xlsx"
 
 
 class V2LoaderIntegrationTests(unittest.TestCase):
@@ -110,6 +111,66 @@ class V2LoaderIntegrationTests(unittest.TestCase):
         ]
         self.assertEqual(int(systems["sales_price_value"].notna().sum()), 78)
         self.assertEqual(int(systems["sales_price_basis"].notna().sum()), 35)
+
+
+class DallmerPointGeometryIntegrationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if not DALLMER.exists():
+            raise unittest.SkipTest("Dallmer v2 integration workbook is not present")
+        stats = DALLMER.stat()
+        cls.master = load_all_workbooks(((str(DALLMER), stats.st_mtime_ns, stats.st_size),))
+        classification = pd.read_csv(
+            ROOT / "config" / "classification_rules.csv",
+            dtype="string",
+            keep_default_na=False,
+        )
+        length_rules = pd.read_csv(
+            ROOT / "config" / "length_rules.csv",
+            dtype="string",
+            keep_default_na=False,
+        )
+        cls.prepared = prepare_benchmark_data(
+            cls.master.flat, classification, length_rules
+        )
+        cls.point_systems = cls.prepared[
+            cls.prepared["benchmark_entity_type"]
+            .astype("string")
+            .str.casefold()
+            .eq("system")
+            & cls.prepared["mapped_drain_form"].eq("point")
+        ].copy()
+
+    def test_dallmer_point_system_count_is_preserved(self):
+        self.assertEqual(len(self.point_systems), 392)
+        self.assertEqual(int(self.point_systems["leaderboard_visibility"].eq("active").sum()), 392)
+
+    def test_dallmer_explicit_geometry_is_visible_in_canonical_point_fields(self):
+        point = self.point_systems
+        self.assertEqual(int(point["visible_grate_length_mm"].notna().sum()), 356)
+        self.assertEqual(int(point["visible_grate_width_mm"].notna().sum()), 356)
+        self.assertEqual(int(point["point_grate_length_mm"].notna().sum()), 356)
+        self.assertEqual(int(point["point_grate_width_mm"].notna().sum()), 356)
+        self.assertEqual(int(point["point_grate_diameter_mm"].notna().sum()), 16)
+        self.assertEqual(int(point["point_top_shape"].notna().sum()), 38)
+        self.assertEqual(int(point["point_top_size"].notna().sum()), 38)
+        self.assertEqual(int(point["point_grate_size"].notna().sum()), 358)
+
+    def test_generic_dimensions_are_not_relabelled_as_grate_geometry(self):
+        point = self.point_systems
+        generic_only = point[
+            point["point_grate_size"].isna()
+            & point["nominal_length_mm"].notna()
+            & point["width_mm"].notna()
+        ]
+        self.assertEqual(len(generic_only), 34)
+
+    def test_round_grate_diameter_has_display_precedence_over_bounding_box(self):
+        row = self.point_systems[
+            pd.to_numeric(self.point_systems["grate_diameter_mm"], errors="coerce").eq(120.0)
+        ].iloc[0]
+        self.assertEqual(row["point_grate_size"], "Ø120 mm")
+
 
 
 if __name__ == "__main__":

@@ -12,6 +12,13 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from point_geometry import (
+    POINT_DRAIN_NUMERIC_FILTERS,
+    POINT_DRAIN_PARAMETER_REGISTRY,
+    POINT_DRAIN_SEARCH_FIELDS,
+    POINT_DRAIN_TEXT_FILTERS,
+)
+
 from drainage_data import (
     MasterData,
     advanced_scoring_audit_tables,
@@ -96,19 +103,26 @@ SOLUTION_TYPE_LABELS = {
     "family_metadata": "Family metadata",
 }
 
-POINT_ATTRIBUTE_FILTERS = {
-    "point_top_shape": "Point-drain top shape",
-    "drain_position": "Drain position",
-    "drain_location": "Drain location",
-    "outlet_orientation_default": "Outlet orientation",
-    "outlet_dn_default": "Outlet DN",
-}
+POINT_ATTRIBUTE_FILTERS = POINT_DRAIN_TEXT_FILTERS
+POINT_NUMERIC_FILTERS = POINT_DRAIN_NUMERIC_FILTERS
 
-POINT_NUMERIC_FILTERS = {
-    "visible_grate_diameter_mm": "Visible grate diameter [mm]",
-    "overall_body_diameter_mm": "Overall body diameter [mm]",
-    "water_seal_mm": "Water seal [mm]",
-}
+POINT_GEOMETRY_SUMMARY_COLUMNS = [
+    "point_top_shape",
+    "point_top_size",
+    "point_grate_size",
+    "point_cover_size",
+    "point_body_size",
+    "drain_position",
+]
+
+POINT_GEOMETRY_SEARCH_COLUMNS = [
+    *POINT_DRAIN_SEARCH_FIELDS,
+    "point_top_size",
+    "point_grate_size",
+    "point_cover_size",
+    "point_body_size",
+]
+
 
 ATTRIBUTE_FILTERS = {
     "material_v4a": "V4A material",
@@ -179,9 +193,10 @@ ADVANCED_LEADERBOARD_COLUMNS = [
     "mapped_solution_type",
     "drain_element_length_mm",
     "nominal_length_mm",
-    "point_top_shape",
-    "visible_grate_diameter_mm",
-    "drain_position",
+    *POINT_GEOMETRY_SUMMARY_COLUMNS,
+    "point_grate_length_mm",
+    "point_grate_width_mm",
+    "point_grate_diameter_mm",
     "outlet_dn_default",
     "outlet_orientation_default",
     "flow_rate_primary_lps",
@@ -699,13 +714,21 @@ def ranking_group_labels(frame: pd.DataFrame) -> dict[str, str]:
                 rank_label = f"#{rank}"
         manufacturer = _display_text(row.get("manufacturer_name"), "Unknown manufacturer")
         model = _display_text(row.get("model_name"), _display_text(row.get("product_family_name"), "Unknown model"))
+        drain_form = _display_text(row.get("mapped_drain_form"), "").casefold()
         length = row.get("drain_element_length_mm")
         if pd.isna(length):
             length = row.get("nominal_length_mm")
         outlet = _display_text(row.get("outlet_dn_default"), "")
 
         details: list[str] = []
-        if pd.notna(length):
+        if drain_form == "point":
+            point_size = _display_text(
+                row.get("point_grate_size"),
+                _display_text(row.get("point_top_size"), ""),
+            )
+            if point_size:
+                details.append(point_size)
+        elif pd.notna(length):
             try:
                 details.append(f"{float(length):g} mm")
             except (TypeError, ValueError):
@@ -789,18 +812,24 @@ def _record_overview_table(row: pd.Series) -> pd.DataFrame:
     drain_form = _display_text(row.get("mapped_drain_form"), "unknown").casefold()
     if drain_form == "point":
         category_specific = [
-            ("Point-drain top shape", "point_top_shape"),
-            ("Drain position", "drain_position"),
-            ("Drain location", "drain_location"),
-            ("Visible grate diameter [mm]", "visible_grate_diameter_mm"),
-            ("Overall body diameter [mm]", "overall_body_diameter_mm"),
-            ("Grate diameter [mm]", "grate_diameter_mm"),
-            ("Cover diameter [mm]", "cover_diameter_mm"),
-            ("Grid size", "grid_size_mm"),
-            ("Included grid size", "included_grid_size_mm"),
-            ("Frame size", "fixed_frame_size_mm"),
-            ("Connection side", "connection_side"),
+            ("Nominal top size", "point_top_size"),
+            ("Grate size", "point_grate_size"),
+            ("Cover size", "point_cover_size"),
+            ("Body size", "point_body_size"),
         ]
+        category_specific.extend(
+            (parameter.display_label, parameter.field)
+            for parameter in POINT_DRAIN_PARAMETER_REGISTRY
+            if parameter.show_in_detail
+        )
+        # Generic source dimensions are retained as declared dimensions only.
+        # They are never relabelled as visible grate/top geometry.
+        category_specific.extend(
+            [
+                ("Declared overall / legacy length [mm]", "nominal_length_mm"),
+                ("Declared overall / legacy width [mm]", "width_mm"),
+            ]
+        )
     elif drain_form == "linear":
         category_specific = [
             ("Drain element length [mm]", "drain_element_length_mm"),
@@ -1142,9 +1171,7 @@ def render_ranked_group_details(
             "mapped_solution_type",
             "drain_element_length_mm",
             "nominal_length_mm",
-            "point_top_shape",
-            "visible_grate_diameter_mm",
-            "drain_position",
+            *POINT_GEOMETRY_SUMMARY_COLUMNS,
             "flow_rate_20mm_lps",
             "flow_rate_primary_lps",
             "flow_rate_primary_head_mm",
@@ -1220,9 +1247,7 @@ def render_ranked_group_details(
             "mapped_solution_type",
             "drain_element_length_mm",
             "length_mm",
-            "point_top_shape",
-            "visible_grate_diameter_mm",
-            "drain_position",
+            *POINT_GEOMETRY_SUMMARY_COLUMNS,
             "flow_rate_20mm_lps",
             "flow_rate_primary_lps",
             "height_adj_min_mm",
@@ -1339,9 +1364,7 @@ def render_single_parameter_ranking(
             "drain_type_label",
             "mapped_solution_type",
             "drain_element_length_mm",
-            "point_top_shape",
-            "visible_grate_diameter_mm",
-            "drain_position",
+            *POINT_GEOMETRY_SUMMARY_COLUMNS,
             "flow_rate_20mm_lps",
             "flow_rate_primary_lps",
             "flow_rate_primary_head_mm",
@@ -1366,7 +1389,10 @@ def render_single_parameter_ranking(
             "mapped_solution_type": st.column_config.TextColumn("Solution type"),
             "drain_element_length_mm": st.column_config.NumberColumn("Drain element length [mm]", format="%.0f"),
             "point_top_shape": st.column_config.TextColumn("Point top shape"),
-            "visible_grate_diameter_mm": st.column_config.NumberColumn("Visible grate diameter [mm]", format="%.0f"),
+            "point_top_size": st.column_config.TextColumn("Nominal top size"),
+            "point_grate_size": st.column_config.TextColumn("Grate size"),
+            "point_cover_size": st.column_config.TextColumn("Cover size"),
+            "point_body_size": st.column_config.TextColumn("Body size"),
             "drain_position": st.column_config.TextColumn("Drain position"),
             "flow_rate_20mm_lps": st.column_config.NumberColumn(
                 "Flow rate at 20 mm [l/s]", format="%.2f"
@@ -1528,9 +1554,7 @@ def render_multi_parameter_ranking(
             "drain_type_label",
             "mapped_solution_type",
             "drain_element_length_mm",
-            "point_top_shape",
-            "visible_grate_diameter_mm",
-            "drain_position",
+            *POINT_GEOMETRY_SUMMARY_COLUMNS,
             *selected_value_columns,
             "outlet_dn_default",
             "material_v4a",
@@ -1558,9 +1582,10 @@ def render_multi_parameter_ranking(
             "Drain element length [mm]", format="%.0f"
         ),
         "point_top_shape": st.column_config.TextColumn("Point top shape"),
-        "visible_grate_diameter_mm": st.column_config.NumberColumn(
-            "Visible grate diameter [mm]", format="%.0f"
-        ),
+        "point_top_size": st.column_config.TextColumn("Nominal top size"),
+        "point_grate_size": st.column_config.TextColumn("Grate size"),
+        "point_cover_size": st.column_config.TextColumn("Cover size"),
+        "point_body_size": st.column_config.TextColumn("Body size"),
         "drain_position": st.column_config.TextColumn("Drain position"),
         "outlet_dn_default": st.column_config.TextColumn("Outlet DN"),
         "Ranking_Score_%": st.column_config.NumberColumn(
@@ -1727,9 +1752,7 @@ def filter_reference_product_groups(
         "length_mm",
         "nominal_length_mm",
         "drain_element_length_mm",
-        "visible_grate_diameter_mm",
-        "overall_body_diameter_mm",
-        "point_top_shape",
+        *POINT_GEOMETRY_SEARCH_COLUMNS,
         "outlet_dn_default",
     ]
 
@@ -1954,15 +1977,28 @@ def render_reference_product_comparison(
         execution_source = execution_source.drop_duplicates(subset=["record_id"], keep="first")
 
     st.markdown("### 1. Reference values")
+    reference_drain_form = _display_text(
+        reference_row.get("mapped_drain_form"), ""
+    ).casefold()
     reference_metrics = st.columns(6)
-    metric_specs = (
-        ("Drain element length", "drain_element_length_mm", "mm", ".0f"),
-        ("Flow at 20 mm", "flow_rate_20mm_lps", "l/s", ".2f"),
-        ("Installation height", "height_adj_min_mm", "mm", ".0f"),
-        ("Water seal", "water_seal_mm", "mm", ".0f"),
-        ("Outlet", "outlet_dn_default", "", ""),
-        ("V4A", "material_v4a", "", ""),
-    )
+    if reference_drain_form == "point":
+        metric_specs = (
+            ("Grate size", "point_grate_size", "", ""),
+            ("Top shape", "point_top_shape", "", ""),
+            ("Flow at 20 mm", "flow_rate_20mm_lps", "l/s", ".2f"),
+            ("Installation height", "height_adj_min_mm", "mm", ".0f"),
+            ("Water seal", "water_seal_mm", "mm", ".0f"),
+            ("Outlet", "outlet_dn_default", "", ""),
+        )
+    else:
+        metric_specs = (
+            ("Drain element length", "drain_element_length_mm", "mm", ".0f"),
+            ("Flow at 20 mm", "flow_rate_20mm_lps", "l/s", ".2f"),
+            ("Installation height", "height_adj_min_mm", "mm", ".0f"),
+            ("Water seal", "water_seal_mm", "mm", ".0f"),
+            ("Outlet", "outlet_dn_default", "", ""),
+            ("V4A", "material_v4a", "", ""),
+        )
     for column, (label, field, unit, number_format) in zip(reference_metrics, metric_specs):
         value = reference_row.get(field)
         if number_format and pd.notna(value):
@@ -2026,6 +2062,62 @@ def render_reference_product_comparison(
         )
     if require_same_v4a and v4a_known:
         exact_match_fields.append("material_v4a")
+
+    if reference_drain_form == "point":
+        point_shape_value = _display_text(reference_row.get("point_top_shape"), "")
+        require_same_point_shape = st.checkbox(
+            "Require the same explicit point-top shape",
+            value=False,
+            key="reference_same_point_top_shape",
+            disabled=not bool(point_shape_value),
+            help=(
+                "This is applied only when the reference has an explicit shape. "
+                "No shape is inferred from dimensions."
+            ),
+        )
+        if require_same_point_shape and point_shape_value:
+            exact_match_fields.append("point_top_shape")
+
+        point_geometry_tolerance_specs = (
+            ("point_grate_length_mm", "Grate length"),
+            ("point_grate_width_mm", "Grate width"),
+            ("point_grate_diameter_mm", "Grate diameter"),
+            ("point_top_nominal_length_mm", "Nominal top length"),
+            ("point_top_nominal_width_mm", "Nominal top width"),
+            ("point_top_nominal_diameter_mm", "Nominal top diameter"),
+            ("point_body_diameter_mm", "Body diameter"),
+        )
+        available_point_geometry = [
+            (field, label, _reference_value(reference_row, field))
+            for field, label in point_geometry_tolerance_specs
+            if _reference_value(reference_row, field) is not None
+        ]
+        if available_point_geometry:
+            with st.expander("Point-drain geometry tolerances", expanded=False):
+                st.caption(
+                    "Only explicit canonical point geometry is offered. Generic product "
+                    "length/width is never treated as grate geometry."
+                )
+                for field, label, reference_value in available_point_geometry:
+                    control_col, tolerance_col = st.columns([2, 1])
+                    use_geometry = control_col.checkbox(
+                        f"Use {label.lower()} ({float(reference_value):g} mm)",
+                        value=False,
+                        key=f"reference_use_{field}",
+                    )
+                    tolerance_value = tolerance_col.number_input(
+                        f"± mm for {label}",
+                        min_value=0.0,
+                        value=10.0,
+                        step=1.0,
+                        key=f"reference_tolerance_{field}",
+                        disabled=not use_geometry,
+                    )
+                    if use_geometry:
+                        numeric_tolerances[field] = {
+                            "mode": "absolute",
+                            "value": float(tolerance_value),
+                        }
 
     tolerance_columns = st.columns(2)
     with tolerance_columns[0]:
@@ -2206,8 +2298,7 @@ def render_reference_product_comparison(
             "mapped_solution_type",
             "drain_element_length_mm",
             "Delta_vs_reference_drain_element_length_mm",
-            "visible_grate_diameter_mm",
-            "point_top_shape",
+            *POINT_GEOMETRY_SUMMARY_COLUMNS,
             "flow_rate_20mm_lps",
             "Delta_vs_reference_flow_rate_20mm_lps",
             "height_adj_min_mm",
@@ -2245,8 +2336,12 @@ def render_reference_product_comparison(
             "mapped_solution_type": st.column_config.TextColumn("Solution type"),
             "drain_element_length_mm": st.column_config.NumberColumn("Drain element length [mm]", format="%.0f"),
             "Delta_vs_reference_drain_element_length_mm": st.column_config.NumberColumn("Drain length delta [mm]", format="%+.0f"),
-            "visible_grate_diameter_mm": st.column_config.NumberColumn("Visible grate diameter [mm]", format="%.0f"),
             "point_top_shape": st.column_config.TextColumn("Point top shape"),
+            "point_top_size": st.column_config.TextColumn("Nominal top size"),
+            "point_grate_size": st.column_config.TextColumn("Grate size"),
+            "point_cover_size": st.column_config.TextColumn("Cover size"),
+            "point_body_size": st.column_config.TextColumn("Body size"),
+            "drain_position": st.column_config.TextColumn("Drain position"),
             "flow_rate_20mm_lps": st.column_config.NumberColumn("Flow at 20 mm [l/s]", format="%.2f"),
             "Delta_vs_reference_flow_rate_20mm_lps": st.column_config.NumberColumn("Flow delta [l/s]", format="%+.2f"),
             "height_adj_min_mm": st.column_config.NumberColumn("Installation height [mm]", format="%.0f"),
@@ -3016,9 +3111,10 @@ def main() -> None:
             "Overall product length [mm]", format="%.0f"
         ),
         "point_top_shape": st.column_config.TextColumn("Point top shape"),
-        "visible_grate_diameter_mm": st.column_config.NumberColumn(
-            "Visible grate diameter [mm]", format="%.0f"
-        ),
+        "point_top_size": st.column_config.TextColumn("Nominal top size"),
+        "point_grate_size": st.column_config.TextColumn("Grate size"),
+        "point_cover_size": st.column_config.TextColumn("Cover size"),
+        "point_body_size": st.column_config.TextColumn("Body size"),
         "drain_position": st.column_config.TextColumn("Drain position"),
         "outlet_dn_default": st.column_config.TextColumn("Outlet DN"),
         "outlet_orientation_default": st.column_config.TextColumn("Outlet orientation"),

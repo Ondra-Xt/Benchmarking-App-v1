@@ -22,6 +22,15 @@ from v2_excel_loader import (
     empty_table_map,
     read_workbook_tables,
 )
+from point_geometry import (
+    POINT_DRAIN_CANONICAL_NUMERIC_FIELDS,
+    POINT_DRAIN_CANONICAL_SOURCE_FIELDS,
+    POINT_DRAIN_COMPOSITE_DISPLAY_FIELDS,
+    POINT_DRAIN_NUMERIC_GROUP_FIELDS,
+    POINT_DRAIN_OBSERVATION_FIELDS,
+    POINT_DRAIN_SEARCH_FIELDS,
+    POINT_DRAIN_TEXT_GROUP_FIELDS,
+)
 
 
 # Backward-compatible name used by older tests and documentation.
@@ -67,8 +76,18 @@ MANDATORY_FILTER_LABELS = {
     "point_top_shape": "Point-drain top shape",
     "drain_position": "Drain position",
     "drain_location": "Drain location",
+    "visible_grate_length_mm": "Visible grate length",
+    "visible_grate_width_mm": "Visible grate width",
     "visible_grate_diameter_mm": "Visible grate diameter",
+    "grate_diameter_mm": "Grate diameter",
+    "point_top_nominal_length_mm": "Nominal top length",
+    "point_top_nominal_width_mm": "Nominal top width",
+    "point_top_nominal_diameter_mm": "Nominal top diameter",
+    "visible_cover_length_mm": "Visible cover length",
+    "visible_cover_width_mm": "Visible cover width",
+    "cover_diameter_mm": "Cover diameter",
     "overall_body_diameter_mm": "Overall body diameter",
+    "body_diameter_mm": "Body diameter",
     "water_seal_mm": "Water seal",
     "outlet_orientation_default": "Outlet orientation",
     "outlet_dn_default": "Outlet DN",
@@ -85,6 +104,13 @@ REFERENCE_NUMERIC_FIELDS = {
     "flow_rate_20mm_lps": {"label": "Flow rate at 20 mm head", "unit": "l/s"},
     "height_adj_min_mm": {"label": "Minimum installation height", "unit": "mm"},
     "water_seal_mm": {"label": "Water seal", "unit": "mm"},
+    "point_top_nominal_length_mm": {"label": "Nominal point top length", "unit": "mm"},
+    "point_top_nominal_width_mm": {"label": "Nominal point top width", "unit": "mm"},
+    "point_top_nominal_diameter_mm": {"label": "Nominal point top diameter", "unit": "mm"},
+    "point_grate_length_mm": {"label": "Point grate length", "unit": "mm"},
+    "point_grate_width_mm": {"label": "Point grate width", "unit": "mm"},
+    "point_grate_diameter_mm": {"label": "Point grate diameter", "unit": "mm"},
+    "point_body_diameter_mm": {"label": "Point body diameter", "unit": "mm"},
 }
 
 REFERENCE_EXACT_FIELDS = {
@@ -93,6 +119,7 @@ REFERENCE_EXACT_FIELDS = {
     "product_category": "Product category",
     "outlet_dn_default": "Outlet DN",
     "material_v4a": "V4A material",
+    "point_top_shape": "Point top shape",
 }
 
 ADVANCED_METRIC_DEFINITIONS = (
@@ -127,6 +154,9 @@ PRESENTATION_GROUP_TEXT_FIELDS = [
     "outlet_dn_default",
     "outlet_orientation_default",
     "outlet_direction_selectable",
+    "point_top_shape",
+    "drain_position",
+    "drain_location",
     "material_family",
     "material_grade_en",
     "material_grade_aisi",
@@ -149,6 +179,16 @@ PRESENTATION_GROUP_NUMERIC_FIELDS = [
     "flow_rate_primary_lps",
     "flow_rate_primary_head_mm",
 ]
+
+# Point-drain geometry is part of the physical technical identity.  Registry
+# fields are appended once so new explicit dimensions cannot be silently
+# collapsed into a cosmetically grouped presentation row.
+for _field in POINT_DRAIN_TEXT_GROUP_FIELDS:
+    if _field not in PRESENTATION_GROUP_TEXT_FIELDS:
+        PRESENTATION_GROUP_TEXT_FIELDS.append(_field)
+for _field in (*POINT_DRAIN_NUMERIC_GROUP_FIELDS, *POINT_DRAIN_CANONICAL_NUMERIC_FIELDS):
+    if _field not in PRESENTATION_GROUP_NUMERIC_FIELDS:
+        PRESENTATION_GROUP_NUMERIC_FIELDS.append(_field)
 
 
 @dataclass
@@ -362,7 +402,12 @@ APPLICATION_OBSERVATION_FIELDS = {
     "finish_name",
     "colours_count",
     "colours_list",
+    "flow_rate_15mm_lps",
+    "flow_rate_published_min_lps",
+    "flow_rate_published_max_lps",
+    "geometry_semantics",
 }
+APPLICATION_OBSERVATION_FIELDS.update(POINT_DRAIN_OBSERVATION_FIELDS)
 
 
 def enrich_flat_with_v2_layers(
@@ -513,7 +558,7 @@ def _project_observation_values(flat: pd.DataFrame, observations: pd.DataFrame) 
         return flat
 
     value = pd.Series(pd.NA, index=working.index, dtype="object")
-    for candidate in ("normalized_value", "raw_value", "extracted_value"):
+    for candidate in ("normalized_value", "value_raw", "raw_value", "extracted_value"):
         if candidate not in working.columns:
             continue
         candidate_values = working[candidate]
@@ -664,6 +709,118 @@ def numeric_series(series: pd.Series) -> pd.Series:
     return pd.to_numeric(cleaned, errors="coerce")
 
 
+
+def add_point_drain_geometry_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    """Add manufacturer-neutral point-drain geometry columns.
+
+    The normalisation is deliberately conservative: a canonical value is
+    created only from explicit source fields with equivalent semantics.  When
+    two explicit source fields disagree, the canonical field remains blank and
+    its ``*_source`` column records the conflict.  Generic ``length_mm`` and
+    ``width_mm`` are never reinterpreted as grate/top dimensions.
+    """
+
+    enriched = frame.copy()
+    if enriched.empty:
+        for target in POINT_DRAIN_CANONICAL_NUMERIC_FIELDS:
+            enriched[target] = pd.Series(dtype="float64")
+            enriched[f"{target}_source"] = pd.Series(dtype="string")
+        for column in POINT_DRAIN_COMPOSITE_DISPLAY_FIELDS:
+            enriched[column] = pd.Series(dtype="string")
+        return enriched
+
+    for target, source_fields in POINT_DRAIN_CANONICAL_SOURCE_FIELDS.items():
+        values, basis = _coalesce_consistent_numeric_fields(enriched, source_fields)
+        enriched[target] = values
+        enriched[f"{target}_source"] = basis
+
+    enriched["point_top_size"] = _compose_explicit_point_size(
+        numeric_series(enriched.get("point_top_nominal_length_mm", pd.Series(index=enriched.index, dtype="float64"))),
+        numeric_series(enriched.get("point_top_nominal_width_mm", pd.Series(index=enriched.index, dtype="float64"))),
+        numeric_series(enriched.get("point_top_nominal_diameter_mm", pd.Series(index=enriched.index, dtype="float64"))),
+    )
+    enriched["point_grate_size"] = _compose_explicit_point_size(
+        numeric_series(enriched["point_grate_length_mm"]),
+        numeric_series(enriched["point_grate_width_mm"]),
+        numeric_series(enriched["point_grate_diameter_mm"]),
+    )
+    enriched["point_cover_size"] = _compose_explicit_point_size(
+        numeric_series(enriched["point_cover_length_mm"]),
+        numeric_series(enriched["point_cover_width_mm"]),
+        numeric_series(enriched["point_cover_diameter_mm"]),
+    )
+    enriched["point_body_size"] = _compose_explicit_point_size(
+        pd.Series(float("nan"), index=enriched.index, dtype="float64"),
+        pd.Series(float("nan"), index=enriched.index, dtype="float64"),
+        numeric_series(enriched["point_body_diameter_mm"]),
+    )
+
+    if "mapped_drain_form" in enriched.columns:
+        point_mask = _normalised_series(enriched, "mapped_drain_form").eq("point")
+        for column in (*POINT_DRAIN_CANONICAL_NUMERIC_FIELDS, *POINT_DRAIN_COMPOSITE_DISPLAY_FIELDS):
+            enriched.loc[~point_mask, column] = pd.NA
+        for target in POINT_DRAIN_CANONICAL_NUMERIC_FIELDS:
+            enriched.loc[~point_mask, f"{target}_source"] = pd.NA
+
+    return enriched
+
+
+def _coalesce_consistent_numeric_fields(
+    frame: pd.DataFrame, source_fields: Sequence[str]
+) -> tuple[pd.Series, pd.Series]:
+    """Coalesce semantically equivalent explicit numeric fields without guessing."""
+
+    available = [field for field in source_fields if field in frame.columns]
+    if not available:
+        return (
+            pd.Series(float("nan"), index=frame.index, dtype="float64"),
+            pd.Series(pd.NA, index=frame.index, dtype="string"),
+        )
+
+    matrix = pd.DataFrame(
+        {field: numeric_series(frame[field]) for field in available},
+        index=frame.index,
+    )
+    result = pd.Series(float("nan"), index=frame.index, dtype="float64")
+    basis = pd.Series(pd.NA, index=frame.index, dtype="string")
+
+    for row_index, row in matrix.iterrows():
+        explicit = [(field, float(row[field])) for field in available if pd.notna(row[field])]
+        if not explicit:
+            continue
+        distinct = {value for _, value in explicit}
+        if len(distinct) == 1:
+            result.at[row_index] = explicit[0][1]
+            basis.at[row_index] = "+".join(field for field, _ in explicit)
+        else:
+            basis.at[row_index] = "conflict:" + "+".join(
+                f"{field}={value:g}" for field, value in explicit
+            )
+    return result, basis
+
+
+def _compose_explicit_point_size(
+    length: pd.Series, width: pd.Series, diameter: pd.Series
+) -> pd.Series:
+    """Format explicit point geometry as ``L × W mm`` or ``ØD mm``.
+
+    Diameter has precedence when it is explicitly available.  This avoids
+    displaying a round grate as a square merely because a source also stores a
+    bounding length/width.  Shape itself is never inferred from the dimensions.
+    """
+
+    result = pd.Series(pd.NA, index=length.index, dtype="string")
+    for row_index in length.index:
+        d = diameter.get(row_index)
+        l = length.get(row_index)
+        w = width.get(row_index)
+        if pd.notna(d):
+            result.at[row_index] = f"Ø{float(d):g} mm"
+        elif pd.notna(l) and pd.notna(w):
+            result.at[row_index] = f"{float(l):g} × {float(w):g} mm"
+    return result
+
+
 def prepare_benchmark_data(
     frame: pd.DataFrame,
     classification_rules: pd.DataFrame,
@@ -678,7 +835,8 @@ def prepare_benchmark_data(
 
     classified = apply_classification_rules(frame, classification_rules)
     length_mapped = apply_length_rules(classified, length_rules)
-    return add_product_hierarchy_keys(length_mapped)
+    point_normalised = add_point_drain_geometry_columns(length_mapped)
+    return add_product_hierarchy_keys(point_normalised)
 
 
 def apply_classification_rules(

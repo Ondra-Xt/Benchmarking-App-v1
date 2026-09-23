@@ -3,6 +3,7 @@ import unittest
 import pandas as pd
 
 from drainage_data import (
+    add_point_drain_geometry_columns,
     add_product_hierarchy_keys,
     advanced_scoring_audit_tables,
     aggregate_presentation_groups,
@@ -28,6 +29,58 @@ from drainage_data import (
 
 
 class DrainageDataTests(unittest.TestCase):
+
+    def test_point_geometry_normalisation_uses_only_explicit_point_fields(self):
+        frame = pd.DataFrame(
+            [
+                {
+                    "mapped_drain_form": "point",
+                    "visible_grate_length_mm": 100,
+                    "visible_grate_width_mm": 90,
+                    "length_mm": 120,
+                    "width_mm": 120,
+                },
+                {
+                    "mapped_drain_form": "point",
+                    "visible_grate_length_mm": 120,
+                    "visible_grate_width_mm": 120,
+                    "grate_diameter_mm": 120,
+                },
+                {
+                    "mapped_drain_form": "point",
+                    "length_mm": 150,
+                    "width_mm": 150,
+                },
+            ]
+        )
+
+        enriched = add_point_drain_geometry_columns(frame)
+
+        self.assertEqual(enriched.loc[0, "point_grate_size"], "100 × 90 mm")
+        self.assertEqual(enriched.loc[1, "point_grate_size"], "Ø120 mm")
+        self.assertTrue(pd.isna(enriched.loc[2, "point_grate_size"]))
+        self.assertTrue(pd.isna(enriched.loc[2, "point_grate_length_mm"]))
+        self.assertTrue(pd.isna(enriched.loc[2, "point_grate_width_mm"]))
+
+    def test_point_geometry_conflicts_remain_blank_and_are_traceable(self):
+        frame = pd.DataFrame(
+            [
+                {
+                    "mapped_drain_form": "point",
+                    "visible_grate_diameter_mm": 120,
+                    "grate_diameter_mm": 115,
+                }
+            ]
+        )
+
+        enriched = add_point_drain_geometry_columns(frame)
+
+        self.assertTrue(pd.isna(enriched.loc[0, "point_grate_diameter_mm"]))
+        self.assertTrue(pd.isna(enriched.loc[0, "point_grate_size"]))
+        self.assertTrue(
+            str(enriched.loc[0, "point_grate_diameter_mm_source"]).startswith("conflict:")
+        )
+
     def test_concatenation_deduplicates_required_keys(self):
         flat, bom, evidence = concatenate_and_deduplicate(
             {
