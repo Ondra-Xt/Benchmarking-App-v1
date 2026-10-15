@@ -90,6 +90,18 @@ Point-drain filters and detail views can use explicit v2 fields such as:
 
 Only explicit, unambiguous record-level observations are projected into the application view. Existing explicit `01_Flat_Input` values are not overwritten.
 
+## Mandatory filter behaviour
+
+Filters follow the sidebar order: drain form and completeness → manufacturer → solution type → length → primary flow → installation height → point geometry → materials/standards. Each control offers values from the candidates admitted by the preceding controls. Ranking uses this same eligibility pipeline.
+
+- Upstream changes retain valid choices and remove stale ones. If none of the previous choices remain available, the control resets to all available options with a caption. An unrestricted selection stays unrestricted as the available options change.
+- Intentionally clearing a multiselect selects no products. The audit records `None selected`; it does not describe that selection as `all`.
+- A mandatory numeric or length requirement with no supported values returns no products. Activating a requirement never silently disables it.
+- Primary flow uses a 0.01 l/s slider step with outward-rounded bounds. The requirement filters `flow_rate_primary_lps`; ranking by flow at 20 mm is a separate metric. No hydraulic head conversion is performed.
+- Verified length rules retain priority, including deliberately blocked families. Where no family rule applies, an explicit standalone drain length or integrated system's explicit `channel_length_mm` can match that **exact declared size only**. It is labelled `declared_exact_only`, without asserting a fixed product or inferring a shortening range. An integrated shower element's overall dimension never substitutes for its channel length.
+
+`filter_widgets.py` reconciles control state before rendering the widgets. `test_filter_pipeline.py` covers actual Streamlit control interactions and filtering of the bundled v2 masters.
+
 ## Prices
 
 `04_Price_Observations` remains available in full in the record detail view. For the existing leaderboard price field, the adapter only fills a missing flat price when exact record-level observations have a single currency. The minimum exact record-level observed price is then used, matching the application's historical group-price policy. Existing flat prices are preserved.
@@ -135,7 +147,7 @@ Run the regression and v2 integration suite with:
 python -m unittest -v
 ```
 
-Patch 10 currently contains 35 tests covering the previous ranking/reference logic and the new WEDI v2 archive loader/integration path.
+The suite includes ranking/reference regressions, v2 loader/geometry integration and mandatory-filter UI/data regression tests.
 
 ## Deployment
 
