@@ -9,7 +9,7 @@ The current application supports both linear and point drainage. Integrated show
 ## Quick start
 
 1. In **Mandatory requirements**, choose the **Drain form**: linear, point, or a retained legacy class.
-2. Optionally choose a **Solution type**, manufacturer, hydraulic, dimensional, material, standard, or sealing requirements.
+2. Choose a manufacturer and **Solution type**, then optionally set dimensional, hydraulic, material, standard, or sealing requirements. Available options follow the controls above them.
 3. For point drains, use the point-specific geometry filters that appear when explicit data is available.
 4. Choose a ranking method.
 5. Open product details to review exact articles, BOM/package contents, technical and hydraulic observations, price observations, evidence, lifecycle status, and controlled gaps.
@@ -32,6 +32,10 @@ The comparison field is **Drain element length**. It represents the drainage ele
 
 For v2 integrated linear systems, explicit channel length is preferred when available. Verified legacy adjustable ranges remain controlled by `config/length_rules.csv`.
 
+The length filter accepts a verified installable interval or a record's explicit declared drain length. A declared length without an approved adjustable interval matches that exact size only; it does not imply that the drain can be shortened. Overall shower-element dimensions are excluded. Families deliberately blocked by an approved length rule remain blocked.
+
+The result table shows **Supported drain length** beside the declared length. For example, a 1500 mm profile with a verified 800–1500 mm range can satisfy a requirement of 800 mm. Its declared length stays 1500 mm; the supported range explains why it qualifies.
+
 ## Point-drain parameters
 
 Depending on the current data, the point filter/detail view may expose:
@@ -53,6 +57,12 @@ A missing value remains missing. The application does not infer a point-drain di
 Mandatory requirements determine eligibility only. They do not award points.
 
 A product with no explicit value for an active mandatory field is normally excluded from that constrained result set rather than being treated as zero.
+
+If no product has a supported value for an activated requirement, the result is empty. To broaden the result, disable that requirement or change the controls above it.
+
+Primary flow-rate limits use the primary declared flow in l/s, with a slider step of 0.01 l/s. Published test heads may differ. The ranking metric **Flow rate at 20 mm head** uses a separate field, so its displayed value may differ from the primary flow used by the mandatory filter.
+
+Changing a control updates the options and numeric bounds below it. Valid selections are retained; an entirely unavailable selection resets to the available choices and the app displays a caption. Clearing every choice in a multiselect means **no products**, not all products. Select all offered choices to remove that restriction.
 
 ## Ranking modes
 

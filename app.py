@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import hmac
 import json
-import math
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+
+from filter_widgets import range_filter, text_filter
 
 from point_geometry import (
     POINT_DRAIN_NUMERIC_FILTERS,
@@ -192,6 +193,7 @@ ADVANCED_LEADERBOARD_COLUMNS = [
     "drain_type_label",
     "mapped_solution_type",
     "drain_element_length_mm",
+    "supported_length_label",
     "nominal_length_mm",
     *POINT_GEOMETRY_SUMMARY_COLUMNS,
     "point_grate_length_mm",
@@ -611,53 +613,29 @@ def validate_rule_table(
 def numeric_range_widget(
     label: str, frame: pd.DataFrame, column: str, *, key: str
 ) -> tuple[float, float] | None:
-    bounds = numeric_bounds(frame, column)
-    if bounds is None:
-        st.sidebar.caption(f"{label}: no numeric values are available.")
-        return None
-
-    minimum, maximum = bounds
-    if minimum == maximum:
-        st.sidebar.caption(f"{label}: the only available value is {minimum:g}.")
-        return bounds
-
-    step = max((maximum - minimum) / 200, 0.01)
-    return st.sidebar.slider(
+    return range_filter(
         label,
-        min_value=float(minimum),
-        max_value=float(maximum),
-        value=(float(minimum), float(maximum)),
-        step=float(step),
+        numeric_bounds(frame, column),
         key=key,
+        decimals=2 if column.endswith("_lps") else 1,
     )
 
 
 def length_range_widget(
     frame: pd.DataFrame,
 ) -> tuple[tuple[int, int] | None, tuple[float, float] | None]:
-    """Render the length slider using verified installable ranges only."""
+    """Render verified ranges and explicitly declared exact drain lengths."""
 
     bounds = length_filter_bounds(frame)
-    if bounds is None:
-        st.sidebar.caption("Length: no verified length range is available for the current selection.")
-        return None, None
-
-    minimum = math.floor(bounds[0])
-    maximum = math.ceil(bounds[1])
-    if minimum == maximum:
-        st.sidebar.caption(f"Drain element length: the only available value is {minimum} mm.")
-        return (minimum, maximum), bounds
-
-    selection = st.sidebar.slider(
+    selection = range_filter(
         "Drain element length [mm]",
-        min_value=minimum,
-        max_value=maximum,
-        value=(minimum, maximum),
-        step=1,
+        bounds,
         key="drain_length_range",
+        integer=True,
         help=(
-            "A product passes when its verified installable range overlaps "
-            "the selected interval."
+            "A product passes when its verified installable range or declared exact "
+            "drain-element length overlaps the selected interval. Overall shower-panel "
+            "dimensions are excluded."
         ),
     )
     return selection, bounds
@@ -666,11 +644,7 @@ def length_range_widget(
 def active_text_filter(
     label: str, options: list[str], *, key: str
 ) -> list[str] | None:
-    if not options:
-        st.sidebar.caption(f"{label}: column is not available.")
-        return None
-    selected = st.sidebar.multiselect(label, options=options, default=options, key=key)
-    return None if set(selected) == set(options) else selected
+    return text_filter(label, options, key=key)
 
 
 def display_dataframe(frame: pd.DataFrame) -> pd.DataFrame:
@@ -764,17 +738,7 @@ def active_token_filter(
 ) -> list[str] | None:
     """Multiselect that keeps raw schema tokens but renders readable labels."""
 
-    if not options:
-        st.sidebar.caption(f"{label}: column is not available.")
-        return None
-    selected = st.sidebar.multiselect(
-        label,
-        options=options,
-        default=options,
-        key=key,
-        format_func=_token_label,
-    )
-    return None if set(selected) == set(options) else selected
+    return text_filter(label, options, key=key, format_func=_token_label)
 
 
 def _record_overview_table(row: pd.Series) -> pd.DataFrame:
@@ -833,6 +797,7 @@ def _record_overview_table(row: pd.Series) -> pd.DataFrame:
     elif drain_form == "linear":
         category_specific = [
             ("Drain element length [mm]", "drain_element_length_mm"),
+            ("Supported drain length", "supported_length_label"),
             ("Length basis", "drain_element_length_basis"),
             ("Channel length [mm]", "channel_length_mm"),
             ("Channel position", "channel_position"),
@@ -1170,6 +1135,7 @@ def render_ranked_group_details(
             "drain_type_label",
             "mapped_solution_type",
             "drain_element_length_mm",
+            "supported_length_label",
             "nominal_length_mm",
             *POINT_GEOMETRY_SUMMARY_COLUMNS,
             "flow_rate_20mm_lps",
@@ -1246,6 +1212,7 @@ def render_ranked_group_details(
             "drain_type_label",
             "mapped_solution_type",
             "drain_element_length_mm",
+            "supported_length_label",
             "length_mm",
             *POINT_GEOMETRY_SUMMARY_COLUMNS,
             "flow_rate_20mm_lps",
@@ -1364,6 +1331,7 @@ def render_single_parameter_ranking(
             "drain_type_label",
             "mapped_solution_type",
             "drain_element_length_mm",
+            "supported_length_label",
             *POINT_GEOMETRY_SUMMARY_COLUMNS,
             "flow_rate_20mm_lps",
             "flow_rate_primary_lps",
@@ -1387,7 +1355,8 @@ def render_single_parameter_ranking(
             "model_name": st.column_config.TextColumn("Technical model"),
             "drain_type_label": st.column_config.TextColumn("Drain form"),
             "mapped_solution_type": st.column_config.TextColumn("Solution type"),
-            "drain_element_length_mm": st.column_config.NumberColumn("Drain element length [mm]", format="%.0f"),
+            "drain_element_length_mm": st.column_config.NumberColumn("Declared drain length [mm]", format="%.0f"),
+            "supported_length_label": st.column_config.TextColumn("Supported drain length"),
             "point_top_shape": st.column_config.TextColumn("Point top shape"),
             "point_top_size": st.column_config.TextColumn("Nominal top size"),
             "point_grate_size": st.column_config.TextColumn("Grate size"),
@@ -1554,6 +1523,7 @@ def render_multi_parameter_ranking(
             "drain_type_label",
             "mapped_solution_type",
             "drain_element_length_mm",
+            "supported_length_label",
             *POINT_GEOMETRY_SUMMARY_COLUMNS,
             *selected_value_columns,
             "outlet_dn_default",
@@ -1579,8 +1549,9 @@ def render_multi_parameter_ranking(
         "drain_type_label": st.column_config.TextColumn("Drain form"),
         "mapped_solution_type": st.column_config.TextColumn("Solution type"),
         "drain_element_length_mm": st.column_config.NumberColumn(
-            "Drain element length [mm]", format="%.0f"
+            "Declared drain length [mm]", format="%.0f"
         ),
+        "supported_length_label": st.column_config.TextColumn("Supported drain length"),
         "point_top_shape": st.column_config.TextColumn("Point top shape"),
         "point_top_size": st.column_config.TextColumn("Nominal top size"),
         "point_grate_size": st.column_config.TextColumn("Grate size"),
@@ -2297,6 +2268,7 @@ def render_reference_product_comparison(
             "mapped_drain_form",
             "mapped_solution_type",
             "drain_element_length_mm",
+            "supported_length_label",
             "Delta_vs_reference_drain_element_length_mm",
             *POINT_GEOMETRY_SUMMARY_COLUMNS,
             "flow_rate_20mm_lps",
@@ -2334,7 +2306,8 @@ def render_reference_product_comparison(
             "model_name": st.column_config.TextColumn("Technical product"),
             "mapped_drain_form": st.column_config.TextColumn("Drain form"),
             "mapped_solution_type": st.column_config.TextColumn("Solution type"),
-            "drain_element_length_mm": st.column_config.NumberColumn("Drain element length [mm]", format="%.0f"),
+            "drain_element_length_mm": st.column_config.NumberColumn("Declared drain length [mm]", format="%.0f"),
+            "supported_length_label": st.column_config.TextColumn("Supported drain length"),
             "Delta_vs_reference_drain_element_length_mm": st.column_config.NumberColumn("Drain length delta [mm]", format="%+.0f"),
             "point_top_shape": st.column_config.TextColumn("Point top shape"),
             "point_top_size": st.column_config.TextColumn("Nominal top size"),
@@ -2601,47 +2574,54 @@ def main() -> None:
             "Include incomplete systems and components", value=False
         )
 
-        manufacturer_filter = active_text_filter(
-            "Manufacturer", string_options(master.flat, "manufacturer_key"), key="manufacturer_filter"
-        )
+        # Each control sees only candidates admitted by the preceding controls.
+        # Reuse these exact settings for the final result so options, constraints
+        # and ranking cannot drift into separate implementations.
+        attribute_selections: dict[str, list[str] | None] = {}
+        point_numeric_filters: dict[str, tuple[float, float] | None] = {}
+        required_numeric_fields: list[str] = []
+        filter_settings = {
+            "include_incomplete": include_incomplete,
+            "manufacturers": None,
+            "flow_range": None,
+            "height_range": None,
+            "attribute_filters": attribute_selections,
+            "drain_forms": None if selected_drain_form is None else [selected_drain_form],
+            "solution_types": None,
+            "numeric_filters": point_numeric_filters,
+            "required_numeric_fields": required_numeric_fields,
+            "length_range": None,
+            "require_length": False,
+            "include_unverified_length": False,
+        }
 
-        solution_scope = filter_flat_input(
-            master.flat,
-            include_incomplete=include_incomplete,
-            manufacturers=manufacturer_filter,
-            flow_range=None,
-            height_range=None,
-            attribute_filters={},
-            drain_forms=None if selected_drain_form is None else [selected_drain_form],
+        def current_scope() -> pd.DataFrame:
+            return filter_flat_input(master.flat, **filter_settings)
+
+        manufacturer_filter = active_text_filter(
+            "Manufacturer", string_options(current_scope(), "manufacturer_key"), key="manufacturer_filter"
         )
+        filter_settings["manufacturers"] = manufacturer_filter
         solution_type_filter = active_token_filter(
             "Solution type",
-            string_options(solution_scope, "mapped_solution_type"),
+            string_options(current_scope(), "mapped_solution_type"),
             key="solution_type_filter",
         )
-
-        scope_frame = filter_flat_input(
-            master.flat,
-            include_incomplete=include_incomplete,
-            manufacturers=manufacturer_filter,
-            flow_range=None,
-            height_range=None,
-            attribute_filters={},
-            drain_forms=None if selected_drain_form is None else [selected_drain_form],
-            solution_types=solution_type_filter,
-        )
+        filter_settings["solution_types"] = solution_type_filter
+        scope_frame = current_scope()
 
         st.markdown("#### Geometry and performance")
         length_filter: tuple[float, float] | None = None
         include_unverified_length = False
+        use_length_requirement = False
         if selected_drain_form == "linear":
             use_length_requirement = st.checkbox(
                 "Set a mandatory drain-length range",
                 value=False,
                 key="activate_length_requirement",
                 help=(
-                    "When active, a product must have a verified installable range "
-                    "that overlaps the selected interval."
+                    "A verified installable range or an explicit declared drain length "
+                    "must overlap the interval. No shortening range is estimated."
                 ),
             )
             if use_length_requirement:
@@ -2659,8 +2639,8 @@ def main() -> None:
                 unverified_count = len(scope_frame) - verified_count
                 st.caption(
                     (
-                        f"Verified range: {verified_count:,} systems; "
-                        f"without a verified range: {unverified_count:,}."
+                        f"Supported range or declared exact length: {verified_count:,} systems; "
+                        f"without a supported length: {unverified_count:,}."
                     ).replace(",", " ")
                 )
                 if length_selection is not None and verified_length_bounds is not None:
@@ -2669,13 +2649,19 @@ def main() -> None:
                         float(length_selection[1]),
                     )
                     include_unverified_length = st.checkbox(
-                        "Also include systems without a verified length range",
+                        "Also include systems without a supported length",
                         value=False,
+                        key="include_unverified_length",
                         help=(
                             "These systems are not confirmed as compatible and remain "
                             "in the result for information only."
                         ),
                     )
+        filter_settings["require_length"] = use_length_requirement
+        filter_settings["length_range"] = length_filter
+        filter_settings["include_unverified_length"] = include_unverified_length
+        if use_length_requirement and length_filter is None:
+            st.caption("No product can satisfy the active length requirement in this selection.")
 
         flow_selection: tuple[float, float] | None = None
         use_flow_requirement = st.checkbox(
@@ -2686,10 +2672,16 @@ def main() -> None:
         if use_flow_requirement:
             flow_selection = numeric_range_widget(
                 "Primary flow rate [l/s]",
-                master.flat,
+                current_scope(),
                 "flow_rate_primary_lps",
                 key="flow_range",
             )
+            required_numeric_fields.append("flow_rate_primary_lps")
+            st.caption(
+                "This requirement uses the primary declared flow. Test heads may differ; "
+                "ranking by flow at 20 mm is a separate choice."
+            )
+        filter_settings["flow_range"] = flow_selection
 
         height_selection: tuple[float, float] | None = None
         use_height_requirement = st.checkbox(
@@ -2700,29 +2692,32 @@ def main() -> None:
         if use_height_requirement:
             height_selection = numeric_range_widget(
                 "Installation height [mm]",
-                master.flat,
+                current_scope(),
                 "height_adj_min_mm",
                 key="height_range",
             )
+            required_numeric_fields.append("height_adj_min_mm")
+        filter_settings["height_range"] = height_selection
 
         if use_flow_requirement or use_height_requirement:
             st.caption(
                 "An active numeric requirement excludes products with N/A in that field."
             )
 
-        point_numeric_filters: dict[str, tuple[float, float] | None] = {}
-        point_attribute_selections: dict[str, list[str] | None] = {}
         if selected_drain_form == "point":
             st.markdown("#### Point-drain geometry")
             for column, label in POINT_ATTRIBUTE_FILTERS.items():
-                options = string_options(scope_frame, column)
-                if options:
-                    point_attribute_selections[column] = active_text_filter(
-                        label, options, key=f"point_attribute_{column}"
-                    )
+                options = string_options(current_scope(), column)
+                attribute_selections[column] = active_text_filter(
+                    label, options, key=f"point_attribute_{column}"
+                )
 
             for column, label in POINT_NUMERIC_FILTERS.items():
-                if numeric_bounds(scope_frame, column) is None:
+                numeric_scope = current_scope()
+                if (
+                    numeric_bounds(numeric_scope, column) is None
+                    and not st.session_state.get(f"activate_point_numeric_{column}", False)
+                ):
                     continue
                 activate = st.checkbox(
                     f"Set mandatory {label.lower()}",
@@ -2731,18 +2726,17 @@ def main() -> None:
                 )
                 if activate:
                     point_numeric_filters[column] = numeric_range_widget(
-                        label, scope_frame, column, key=f"point_numeric_{column}"
+                        label, numeric_scope, column, key=f"point_numeric_{column}"
                     )
+                    required_numeric_fields.append(column)
 
         st.markdown("#### Materials, standards and installation")
-        attribute_selections: dict[str, list[str] | None] = {}
         for column, label in ATTRIBUTE_FILTERS.items():
             attribute_selections[column] = active_text_filter(
                 label,
-                string_options(scope_frame, column),
+                string_options(current_scope(), column),
                 key=f"attribute_{column}",
             )
-        attribute_selections.update(point_attribute_selections)
 
         st.divider()
         st.header("2. Ranking criteria")
@@ -2938,11 +2932,13 @@ def main() -> None:
 
     filter_payload: dict[str, object] = {
         "drain_form": selected_drain_form or "all",
-        "solution_types": solution_type_filter or ["all"],
+        "solution_types": ["all"] if solution_type_filter is None else solution_type_filter,
         "include_incomplete_systems_and_components": include_incomplete,
-        "manufacturers": manufacturer_filter or ["all"],
+        "manufacturers": ["all"] if manufacturer_filter is None else manufacturer_filter,
         "length_range_mm": list(length_filter) if length_filter is not None else None,
         "include_unverified_length": include_unverified_length,
+        "require_length": use_length_requirement,
+        "required_numeric_fields": required_numeric_fields,
         "primary_flow_rate_range_lps": list(flow_filter) if flow_filter is not None else None,
         "installation_height_range_mm": list(height_filter) if height_filter is not None else None,
         "numeric_filters": {
@@ -2950,24 +2946,12 @@ def main() -> None:
             for column, selected_range in point_numeric_filters.items()
         },
         "attributes": {
-            column: selected_values or ["all"]
+            column: ["all"] if selected_values is None else selected_values
             for column, selected_values in attribute_selections.items()
         },
     }
 
-    filtered = filter_flat_input(
-        master.flat,
-        include_incomplete=include_incomplete,
-        manufacturers=manufacturer_filter,
-        flow_range=flow_filter,
-        height_range=height_filter,
-        attribute_filters=attribute_selections,
-        drain_forms=None if selected_drain_form is None else [selected_drain_form],
-        solution_types=solution_type_filter,
-        numeric_filters=point_numeric_filters,
-        length_range=length_filter,
-        include_unverified_length=include_unverified_length,
-    )
+    filtered = current_scope()
 
     render_active_mandatory_requirements(
         filter_payload,
@@ -3105,8 +3089,9 @@ def main() -> None:
         "drain_type_label": st.column_config.TextColumn("Drain form"),
         "mapped_solution_type": st.column_config.TextColumn("Solution type"),
         "drain_element_length_mm": st.column_config.NumberColumn(
-            "Drain element length [mm]", format="%.0f"
+            "Declared drain length [mm]", format="%.0f"
         ),
+        "supported_length_label": st.column_config.TextColumn("Supported drain length"),
         "nominal_length_mm": st.column_config.NumberColumn(
             "Overall product length [mm]", format="%.0f"
         ),

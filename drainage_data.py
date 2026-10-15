@@ -1016,18 +1016,65 @@ def apply_length_rules(frame: pd.DataFrame, rules: pd.DataFrame) -> pd.DataFrame
     mapped["drain_element_length_basis"] = "nominal product/drain length"
     linear_mask = _normalised_series(mapped, "mapped_drain_form").eq("linear")
     point_mask = _normalised_series(mapped, "mapped_drain_form").eq("point")
+    integrated_mask = _normalised_series(mapped, "mapped_solution_type").isin(
+        {"integrated_shower_element", "heat_recovery_shower_system"}
+    )
+    # A shower element's overall length is never a substitute for its channel.
+    mapped.loc[linear_mask & integrated_mask, "drain_element_length_mm"] = float("nan")
+    mapped.loc[linear_mask & integrated_mask, "drain_element_length_basis"] = (
+        "channel length is not explicitly available"
+    )
     if "channel_length_mm" in mapped.columns:
         channel_length = numeric_series(mapped["channel_length_mm"])
-        use_channel = linear_mask & channel_length.notna()
+        use_channel = linear_mask & channel_length.gt(0)
         mapped.loc[use_channel, "drain_element_length_mm"] = channel_length.loc[use_channel]
         mapped.loc[use_channel, "drain_element_length_basis"] = "explicit channel_length_mm"
     mapped.loc[point_mask, "drain_element_length_mm"] = float("nan")
     mapped.loc[point_mask, "drain_element_length_basis"] = "not applicable to point drain"
+
+    # A record-level declared length supports that exact size, without asserting
+    # that the product is fixed or inventing a shortening range. Approved family
+    # rules (including deliberately blocked ones) retain precedence.
+    declared_length = numeric_series(mapped["drain_element_length_mm"])
+    exact_only = (
+        active_linear
+        & _normalised_series(mapped, "benchmark_entity_type").eq("system")
+        & mapped["length_rule_id"].eq("UNMATCHED")
+        & declared_length.gt(0)
+    )
+    mapped.loc[exact_only, "length_min_mm"] = declared_length.loc[exact_only]
+    mapped.loc[exact_only, "length_max_mm"] = declared_length.loc[exact_only]
+    mapped.loc[exact_only, "length_rule_id"] = "RECORD_DECLARED_EXACT"
+    mapped.loc[exact_only, "length_mode"] = "declared_exact_only"
+    mapped.loc[exact_only, "strict_filter_eligible"] = "yes_exact_only"
+    mapped.loc[exact_only, "length_filter_ready"] = "yes"
+    mapped.loc[exact_only, "length_coverage_status"] = "filter_ready_declared_exact"
+    mapped.loc[exact_only, "length_status_label"] = "Declared exact length (no shortening range)"
+    mapped.loc[exact_only, "length_evidence_status"] = "explicit_record_value"
+    mapped.loc[exact_only, "length_evidence_note"] = (
+        "Uses the explicit drain-element length only; no shortening range is inferred."
+    )
+    mapped.loc[exact_only, "length_rationale"] = mapped.loc[
+        exact_only, "drain_element_length_basis"
+    ]
+    mapped["supported_length_label"] = pd.Series(pd.NA, index=mapped.index, dtype="string")
+    mapped.loc[linear_mask, "supported_length_label"] = "Not verified"
+    ready = mapped["length_filter_ready"].eq("yes")
+    for index in mapped.index[ready]:
+        lower = float(mapped.at[index, "length_min_mm"])
+        upper = float(mapped.at[index, "length_max_mm"])
+        if mapped.at[index, "length_mode"] == "declared_exact_only":
+            label = f"{lower:g} mm (declared exact)"
+        elif lower == upper:
+            label = f"{lower:g} mm (verified fixed)"
+        else:
+            label = f"{lower:g}–{upper:g} mm (verified range)"
+        mapped.at[index, "supported_length_label"] = label
     return mapped
 
 
 def length_filter_bounds(frame: pd.DataFrame) -> tuple[float, float] | None:
-    """Return the overall verified installable range for the linear-drain filter."""
+    """Return outer bounds of supported ranges and declared exact lengths."""
 
     required = {"length_filter_ready", "length_min_mm", "length_max_mm"}
     if not required.issubset(frame.columns):
@@ -1164,6 +1211,8 @@ def filter_flat_input(
     numeric_filters: Mapping[str, tuple[float, float] | None] | None = None,
     length_range: tuple[float, float] | None = None,
     include_unverified_length: bool = False,
+    require_length: bool = False,
+    required_numeric_fields: Sequence[str] = (),
 ) -> pd.DataFrame:
     """Apply hard filters only to ``01_Flat_Input``."""
 
@@ -1196,12 +1245,21 @@ def filter_flat_input(
         if selected_range is not None:
             filtered = _filter_numeric_range(filtered, column, selected_range)
 
+    for column in required_numeric_fields:
+        if column not in filtered.columns:
+            return filtered.iloc[0:0].copy()
+        filtered = filtered[numeric_series(filtered[column]).notna()]
+
     if length_range is not None:
         filtered = _filter_length_compatibility(
             filtered,
             length_range,
             include_unverified=include_unverified_length,
         )
+    elif require_length:
+        # An activated requirement must never turn into an unrestricted query
+        # just because the selected manufacturer has no supported length bounds.
+        filtered = filtered.iloc[0:0]
 
     return filtered.reset_index(drop=True)
 
@@ -2360,7 +2418,7 @@ def mandatory_requirements_from_filters(
         selected_solution_types = [
             str(item) for item in solution_types if str(item) != "all"
         ]
-        if selected_solution_types:
+        if "all" not in solution_types:
             add("mapped_solution_type", "in", value=selected_solution_types)
 
     include_incomplete = bool(
@@ -2381,7 +2439,7 @@ def mandatory_requirements_from_filters(
         manufacturers, (str, bytes)
     ):
         selected = [str(item) for item in manufacturers if str(item) != "all"]
-        if selected:
+        if "all" not in manufacturers:
             add("manufacturer_key", "in", value=selected)
 
     length_range = payload.get("length_range_mm")
@@ -2392,15 +2450,21 @@ def mandatory_requirements_from_filters(
     ):
         add(
             "installable_length_mm",
-            "overlaps_verified_range",
+            "overlaps_supported_range",
             minimum=length_range[0],
             maximum=length_range[1],
             unit="mm",
             notes=(
-                "Systems without a verified range are also retained"
+                "Systems without a supported length are also retained for information"
                 if bool(payload.get("include_unverified_length", False))
-                else "Only systems with a verified overlapping range are retained"
+                else "Verified ranges and explicit declared exact lengths are retained"
             ),
+        )
+    elif payload.get("require_length", False):
+        add(
+            "installable_length_mm",
+            "supported_length_required",
+            notes="No supported length is available in the current selection; no products qualify",
         )
 
     range_fields = (
@@ -2439,12 +2503,16 @@ def mandatory_requirements_from_filters(
                     unit=unit,
                 )
 
+    for field in payload.get("required_numeric_fields", []):
+        if not any(row["field"] == field for row in requirements):
+            add(str(field), "is_not_null", notes="An explicit numeric value is required")
+
     attributes = payload.get("attributes", {})
     if isinstance(attributes, Mapping):
         for field, values in attributes.items():
             if isinstance(values, Sequence) and not isinstance(values, (str, bytes)):
                 selected = [str(item) for item in values if str(item) != "all"]
-                if selected:
+                if "all" not in values:
                     add(str(field), "in", value=selected)
             elif values not in {None, "", "all"}:
                 add(str(field), "equals", value=values)
@@ -2461,7 +2529,7 @@ def mandatory_requirements_table(
     for requirement in requirements:
         value = requirement.get("value")
         if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-            value = "; ".join(str(item) for item in value)
+            value = "; ".join(str(item) for item in value) if len(value) else "None selected"
         minimum = requirement.get("minimum")
         maximum = requirement.get("maximum")
         if minimum is not None or maximum is not None:
